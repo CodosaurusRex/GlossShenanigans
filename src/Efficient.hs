@@ -41,8 +41,8 @@ data World = World { totalPlots  :: TotalPlots
 listOfKeys :: [(Int, Int)]
 listOfKeys = [(x,y) | x <- [0..3], y <- [0..3], x < y]
 
-myMutable :: IO MutImage -- <Checked>
-myMutable = createMutableImage 500 500 (PixelRGBA8 0 0 0 0) --creates a new Mutable Image that's 720 by 480 and is all black
+--myMutable :: IO MutImage -- <Checked>
+--myMutable = createMutableImage 500 500 (PixelRGBA8 0 0 0 255) --creates a new Mutable Image that's 720 by 480 and is all black
 
 initWorld :: TChan TrodeSpike ->TotalPlots -> World --initializes the world <Checked>
 initWorld c ps = World ps c 4492 0 1
@@ -50,7 +50,7 @@ initWorld c ps = World ps c 4492 0 1
 initPlots :: IO TotalPlots -- <Checked>
 initPlots = do
   let listOfIOImages ls = if length ls < 6 
-                          then listOfIOImages $ createMutableImage 500 500 (PixelRGBA8 0 0 0 0):ls
+                          then listOfIOImages $ createMutableImage 700 700 (PixelRGBA8 0 0 0 255):ls
                           else ls --build a list of IO Mutable Images
       toPlot im = Plot im 
   lsIm <- sequence $ listOfIOImages [] --Turn that list of IO Mutable Images into a list of images
@@ -64,7 +64,7 @@ initPlots = do
 imToPic :: MutImage -> IO Picture --this function has been <Checked>.
 imToPic mutim = do
   im <- freezeImage mutim --changes MutableImage to Image
-  return $ bitmapOfByteString 500 500 (toStrict $ encodeBitmap im) False --changes Image to picture
+  return $ scale 1 (-1) $ fromImageRGBA8 im --bitmapOfByteString 500 500 (toStrict $ encodeBitmap im) False --changes Image to picture
   
 toPointList :: TrodeSpike -> [Double] -- <Checked>
 toPointList s = (realToFrac $ (V.!) (spikeAmplitudes s) 0):
@@ -80,14 +80,14 @@ scaleFac = 2000000
 main :: IO()
 main = do
   (fn:_) <- getArgs
-  let d = InWindow "cool window" (500, 500) (0,0)
+  let d = InWindow "cool window" (700, 700) (0,0)
   t0 <- getCurrentTime
   c <- newTChanIO
   _ <- async. runEffect $ produceTrodeSpikesFromFile fn 16
        >-> relativeTimeCat (\s -> spikeTime s - 4492)
        >-> cToTChan c
   plots <- initPlots
-  playIO d black 30 (initWorld c plots) (drawWorld) handleInp $ step t0
+  playIO d blue 30000 (initWorld c plots) (drawWorld) handleInp $ step t0
 
 drawWorld :: World -> IO Picture --changes from world to actual picture
 drawWorld (World plots c _ chanx chany) = do
@@ -122,10 +122,13 @@ indivPlots ls ((chanx, chany), plot) = do
     else do
     let x     = ceiling $ scaleFac * (!!) ls chanx
         y     = ceiling $ scaleFac * (!!) ls chany
-    writePixel mutIm x y (PixelRGBA8 255 255 255 255)
     print x
     print y
-    indivPlots (drop 4 ls) ((chanx, chany), plot)
+    if ((x > 0) && (y > 0))
+      then do
+           writePixel mutIm x y (PixelRGBA8 255 255 255 255)
+           indivPlots (drop 4 ls) ((chanx, chany), plot)
+      else indivPlots (drop 4 ls) ((chanx, chany), plot)
 
 --------------------------------TChan stuff--------------------
                 
