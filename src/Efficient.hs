@@ -37,10 +37,6 @@ data World = World { totalPlots  :: TotalPlots
                    , currchanY   :: Int
                    }
 
-
---WHY DOESN'T IT WORKKKKKKKKKKK?!?!?!?!?!?!?!??!?!?!?!?!??!?!?!?!?!?!?
--- #FRUSTRATION#OMFG#ISPENTTWOFUCKINGDAYSDEBUGGINGTHISSHIT
--- #GIVEUPONLIFE
 ------------------------Initializing stuff-------------------------
 listOfKeys :: [(Int, Int)]
 listOfKeys = [(x,y) | x <- [0..3], y <- [0..3], x < y]
