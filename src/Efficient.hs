@@ -22,10 +22,12 @@ import Data.ByteString.Lazy (toStrict)
 import Codec.Picture.Bitmap
 import Control.Applicative
 import Data.Vector as V ((!))
+import Codec.BMP
 
 type TotalPlots = Map (Int, Int) Plot
 
 type MutImage = MutableImage (PrimState IO) PixelRGBA8
+type FrozImage = Image PixelRGBA8
 
 data Plot = Plot { image     :: MutImage
                  }
@@ -35,16 +37,22 @@ data World = World { totalPlots  :: TotalPlots
                    , time        :: Double
                    , currchanX   :: Int
                    , currchanY   :: Int
+                   , testIm      :: FrozImage
                    }
 
 ------------------------Initializing stuff-------------------------
 listOfKeys :: [(Int, Int)]
 listOfKeys = [(x,y) | x <- [0..3], y <- [0..3], x < y]
 
---myMutable :: IO MutImage -- <Checked>
---myMutable = createMutableImage 500 500 (PixelRGBA8 0 0 0 255) --creates a new Mutable Image that's 720 by 480 and is all black
+myMutable :: IO MutImage -- <Checked>
+myMutable = createMutableImage 500 500 (PixelRGBA8 255 0 0 255) --creates a new Mutable Image that's 720 by 480 and is all black
 
-initWorld :: TChan TrodeSpike ->TotalPlots -> World --initializes the world <Checked>
+myFrozen :: IO FrozImage
+myFrozen = do
+  mut <- myMutable
+  freezeImage mut
+
+initWorld :: TChan TrodeSpike ->TotalPlots -> FrozImage -> World --initializes the world <Checked>
 initWorld c ps = World ps c 4492 0 1
 
 initPlots :: IO TotalPlots -- <Checked>
@@ -60,12 +68,22 @@ initPlots = do
 
 
 -----------------------Conversion Stuff-------------------------------
-
 imToPic :: MutImage -> IO Picture --this function has been <Checked>.
 imToPic mutim = do
+  {-
   im <- freezeImage mutim --changes MutableImage to Image
-  return $ scale 1 (-1) $ fromImageRGBA8 im --bitmapOfByteString 500 500 (toStrict $ encodeBitmap im) False --changes Image to picture
-  
+  let bString = encodeBitmap im
+  let pic = parseBMP (bString)
+  either (\a -> return $ Circle 5) (\b -> return $ scale 1 (-1)$ bitmapOfBMP b) pic
+  -}
+  return $ Circle 10
+    --print $ toStrict $ encodeBitmap im
+  --return $ scale 1 (-1) $ fromImageRGBA8 im
+  --return $ scale 1 (-1) $ bitmapOfByteString 700 700 (toStrict $ encodeBitmap im) False --changes Image to picture
+  --return $ Circle 5
+  --return $ scale 1 (-1) $ bitmapOfBMP $ packRGBA32ToBMP 700 700 (toStrict $ encodeBitmap im)
+
+
 toPointList :: TrodeSpike -> [Double] -- <Checked>
 toPointList s = (realToFrac $ (V.!) (spikeAmplitudes s) 0):
                 (realToFrac $ (V.!) (spikeAmplitudes s) 1):
@@ -87,13 +105,15 @@ main = do
        >-> relativeTimeCat (\s -> spikeTime s - 4492)
        >-> cToTChan c
   plots <- initPlots
-  playIO d blue 30000 (initWorld c plots) (drawWorld) handleInp $ step t0
+  image <- myFrozen 
+  playIO d blue 300 (initWorld c plots image) (drawWorld) handleInp $ step t0
 
 drawWorld :: World -> IO Picture --changes from world to actual picture
-drawWorld (World plots c _ chanx chany) = do
+drawWorld (World plots c _ chanx chany testIm) = do
   let currPlot = (M.!) plots (chanx, chany)
       im       = image currPlot
   imToPic im
+  --return $ bitmapOfByteString 500 500 (toStrict $ encodeBitmap testIm) False
   
   
   
@@ -122,8 +142,8 @@ indivPlots ls ((chanx, chany), plot) = do
     else do
     let x     = ceiling $ scaleFac * (!!) ls chanx
         y     = ceiling $ scaleFac * (!!) ls chany
-    print x
-    print y
+    --print x
+    --print y
     if ((x > 0) && (y > 0))
       then do
            writePixel mutIm x y (PixelRGBA8 255 255 255 255)
@@ -159,10 +179,13 @@ getExperimentTime t0 et0 =
 
 -----------------------Input stuff---------------
 
-  
-  
-
 handleInp :: Event -> World -> IO World
+handleInp (EventKey (MouseButton b) Up _ _) w
+  | b == LeftButton =
+    return $ w { currchanX = (currchanX w + 1) `mod` 4}
+  | b == RightButton =
+      return $ w { currchanY = (currchanY w + 1) `mod` 4}
+  | otherwise = return w
 handleInp _ w = return w
 
 
@@ -175,3 +198,5 @@ listOfListsToList :: [[Double]]-> [Double]
 -}
 
 listOfListsToList ls = concat ls
+
+
