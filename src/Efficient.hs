@@ -19,6 +19,7 @@ import Data.Time.Clock
 import Data.Monoid
 import Data.Ephys.Spike
 import Data.ByteString.Lazy (toStrict)
+import qualified Data.ByteString as BS (drop)
 import Codec.Picture.Bitmap
 import Control.Applicative
 import Data.Vector as V ((!))
@@ -30,14 +31,13 @@ type MutImage = MutableImage (PrimState IO) PixelRGBA8
 type FrozImage = Image PixelRGBA8
 
 data Plot = Plot { image     :: MutImage
-                 }
+                 } 
             
 data World = World { totalPlots  :: TotalPlots
                    , spikeChan   :: TChan TrodeSpike
                    , time        :: Double
                    , currchanX   :: Int
                    , currchanY   :: Int
-                   , testIm      :: FrozImage
                    }
 
 ------------------------Initializing stuff-------------------------
@@ -52,13 +52,13 @@ myFrozen = do
   mut <- myMutable
   freezeImage mut
 
-initWorld :: TChan TrodeSpike ->TotalPlots -> FrozImage -> World --initializes the world <Checked>
+initWorld :: TChan TrodeSpike ->TotalPlots -> World --initializes the world <Checked>
 initWorld c ps = World ps c 4492 0 1
 
 initPlots :: IO TotalPlots -- <Checked>
 initPlots = do
   let listOfIOImages ls = if length ls < 6 
-                          then listOfIOImages $ createMutableImage 700 700 (PixelRGBA8 0 0 0 255):ls
+                          then listOfIOImages$ createMutableImage 700 700 (PixelRGBA8 0 0 255 0):ls
                           else ls --build a list of IO Mutable Images
       toPlot im = Plot im 
   lsIm <- sequence $ listOfIOImages [] --Turn that list of IO Mutable Images into a list of images
@@ -70,18 +70,9 @@ initPlots = do
 -----------------------Conversion Stuff-------------------------------
 imToPic :: MutImage -> IO Picture --this function has been <Checked>.
 imToPic mutim = do
-  {-
   im <- freezeImage mutim --changes MutableImage to Image
   let bString = encodeBitmap im
-  let pic = parseBMP (bString)
-  either (\a -> return $ Circle 5) (\b -> return $ scale 1 (-1)$ bitmapOfBMP b) pic
-  -}
-  return $ Circle 10
-    --print $ toStrict $ encodeBitmap im
-  --return $ scale 1 (-1) $ fromImageRGBA8 im
-  --return $ scale 1 (-1) $ bitmapOfByteString 700 700 (toStrict $ encodeBitmap im) False --changes Image to picture
-  --return $ Circle 5
-  --return $ scale 1 (-1) $ bitmapOfBMP $ packRGBA32ToBMP 700 700 (toStrict $ encodeBitmap im)
+  return $ scale (1) (-1) $ bitmapOfByteString 700 700 (BS.drop (54) $ toStrict bString) False
 
 
 toPointList :: TrodeSpike -> [Double] -- <Checked>
@@ -106,17 +97,14 @@ main = do
        >-> cToTChan c
   plots <- initPlots
   image <- myFrozen 
-  playIO d blue 300 (initWorld c plots image) (drawWorld) handleInp $ step t0
+  playIO d blue 300 (initWorld c plots) (drawWorld) handleInp $ step t0
 
 drawWorld :: World -> IO Picture --changes from world to actual picture
-drawWorld (World plots c _ chanx chany testIm) = do
+drawWorld (World plots c _ chanx chany) = do
   let currPlot = (M.!) plots (chanx, chany)
       im       = image currPlot
-  imToPic im
-  --return $ bitmapOfByteString 500 500 (toStrict $ encodeBitmap testIm) False
-  
-  
-  
+  putStrLn $ "drawing to" ++ (show (chanx, chany))
+  imToPic (im)  
 
 ----------------------update stuff------------------------------
 
@@ -132,18 +120,19 @@ step t0 _ w = do
 updateBMPs :: TotalPlots -> [[Double]] -> IO ()
 updateBMPs plots updatels = do
   let ls = toList plots
-  mapM_ (indivPlots (listOfListsToList updatels)) ls
+  mapM_ (indivPlots (concat updatels)) ls
 
-indivPlots :: [Double] -> ((Int, Int), Plot) -> IO ()
+
+indivPlots :: [Double] -> ((Int, Int), Plot) -> IO () --not a problem here
 indivPlots ls ((chanx, chany), plot) = do
   let mutIm = image plot
+  dimPlot mutIm
   if ((length ls) == 0)
     then return ()
     else do
     let x     = ceiling $ scaleFac * (!!) ls chanx
         y     = ceiling $ scaleFac * (!!) ls chany
-    --print x
-    --print y
+    putStrLn $ "updating to" ++ (show (chanx, chany)) ++ (show (x,y))
     if ((x > 0) && (y > 0))
       then do
            writePixel mutIm x y (PixelRGBA8 255 255 255 255)
@@ -180,23 +169,46 @@ getExperimentTime t0 et0 =
 -----------------------Input stuff---------------
 
 handleInp :: Event -> World -> IO World
-handleInp (EventKey (MouseButton b) Up _ _) w
-  | b == LeftButton =
-    return $ w { currchanX = (currchanX w + 1) `mod` 4}
+handleInp (EventKey (MouseButton b) Up _ _) w@(World _ _ _ x y)
+{-
+  | b == LeftButton = 
+    return $ w {currchanX = (currchanX w + 1) `mod` 4}
   | b == RightButton =
       return $ w { currchanY = (currchanY w + 1) `mod` 4}
+-}
+  | b == LeftButton = do
+    let (newX, newY) = nextChannel x y
+    return $ w {currchanX = newX, currchanY = newY}
   | otherwise = return w
 handleInp _ w = return w
 
 
----------------------helper funcs-------------------------------
+nextChannel :: Int -> Int -> (Int, Int)
+nextChannel x y= case (x,y) of (0,1) -> (0,2)
+                               (0,2) -> (0,3)
+                               (0,3) -> (1,2)
+                               (1,2) -> (1,3)
+                               (1,3) -> (2,3)
+                               (2,3) -> (0,1)
+                               otherwise -> (0,1)
+  
+-------------------------ignore past here--------------------------
 
-listOfListsToList :: [[Double]]-> [Double]
-{-listOfListsToList (x:xs) list = if length xs == 0
-                              then list
-                              else listOfListsToList xs (x ++ list)
--}
 
-listOfListsToList ls = concat ls
+printWorld :: World -> IO ()
+printWorld  w = print $ (currchanX w, currchanY w)
 
 
+dimPlot :: MutImage -> IO ()
+dimPlot im  = return ()
+
+
+
+indivPlots' :: [Double] -> ((Int, Int), Plot) -> IO ()
+indivPlots' ls ((x,y), plot) = do
+  let mutIm= image plot
+  sequence_ $ map (pixelWriter mutIm x y) ls
+
+pixelWriter :: MutImage -> Int -> Int -> Double -> IO () 
+pixelWriter im x1 x2 y = do
+  writePixel im (100*((x1 * x2) + x2)) (ceiling $ scaleFac * y) (PixelRGBA8 255 255 255 255) 
