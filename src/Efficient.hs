@@ -30,7 +30,8 @@ type TotalPlots = Map (Int, Int) Plot
 type MutImage = MutableImage (PrimState IO) PixelRGBA8
 type FrozImage = Image PixelRGBA8
 
-data Plot = Plot { image     :: MutImage
+data Plot = Plot { image:: MutImage
+                 , id   :: Int       
                  } 
             
 data World = World { totalPlots  :: TotalPlots
@@ -39,6 +40,15 @@ data World = World { totalPlots  :: TotalPlots
                    , currchanX   :: Int
                    , currchanY   :: Int
                    }
+
+green'   = PixelRGBA8 255 0 255 0
+blue'    = PixelRGBA8 0 255 255 0
+red'     = PixelRGBA8 0 0 255 255
+white'   = PixelRGBA8 255 255 255 255
+yellow'  = PixelRGBA8 255 0 255 255
+cyan'    = PixelRGBA8 255 255 255 0
+magenta' = PixelRGBA8 0 255 255 255 
+
 
 ------------------------Initializing stuff-------------------------
 listOfKeys :: [(Int, Int)]
@@ -57,13 +67,25 @@ initWorld c ps = World ps c 4492 0 1
 
 initPlots :: IO TotalPlots -- <Checked>
 initPlots = do
-  let listOfIOImages ls = if length ls < 6 
-                          then listOfIOImages$ createMutableImage 700 700 (PixelRGBA8 0 0 255 0):ls
-                          else ls --build a list of IO Mutable Images
-      toPlot im = Plot im 
-  lsIm <- sequence $ listOfIOImages [] --Turn that list of IO Mutable Images into a list of images
-  let plots = map toPlot lsIm
-  return $ fromList (zip listOfKeys plots) -- zip the keys with mutable images and then turn them all into a map. Return the map in the IO monad.
+  let listOfIOImages (x,y) = x `seq` y `seq` createMutableImage 700 700 (PixelRGBA8 0 (fromIntegral y) 255 (fromIntegral x))
+
+
+
+        {-if length ls < 6 
+                          then listOfIOImages$
+                               createMutableImage 700 700 (PixelRGBA8 0 0 255 0):[]
+                               createMutableImage 700 700 (PixelRGBA8 0 0 255 5):
+                               createMutableImage 700 700 (PixelRGBA8 0 0 255 4):
+                               createMutableImage 700 700 (PixelRGBA8 0 0 255 3):
+                               createMutableImage 700 700 (PixelRGBA8 0 0 255 2):
+                               createMutableImage 700 700 (PixelRGBA8 0 0 255 1):[]-}
+                                                                                       
+ --                         else ls --build a list of IO Mutable Images
+      toPlot im num = Plot im num 
+  lsIm <- forM listOfKeys listOfIOImages 
+--sequence $ listOfIOImages [] --Turn that list of IO Mutable Images into a list of images
+  let plots = zipWith toPlot lsIm ([0..5] :: [Int]) 
+  return $ fromList (zip listOfKeys (plots)) -- zip the keys with mutable images and then turn them all into a map. Return the map in the IO monad.
       
 
 
@@ -103,7 +125,7 @@ drawWorld :: World -> IO Picture --changes from world to actual picture
 drawWorld (World plots c _ chanx chany) = do
   let currPlot = (M.!) plots (chanx, chany)
       im       = image currPlot
-  putStrLn $ "drawing to" ++ (show (chanx, chany))
+  --putStrLn $ "drawing to" ++ (show (chanx, chany))
   imToPic (im)  
 
 ----------------------update stuff------------------------------
@@ -124,7 +146,7 @@ updateBMPs plots updatels = do
 
 
 indivPlots :: [Double] -> ((Int, Int), Plot) -> IO () --not a problem here
-indivPlots ls ((chanx, chany), plot) = do
+indivPlots ls ((chanx, chany), (plot@(Plot _ id))) = do
   let mutIm = image plot
   dimPlot mutIm
   if ((length ls) == 0)
@@ -132,13 +154,19 @@ indivPlots ls ((chanx, chany), plot) = do
     else do
     let x     = ceiling $ scaleFac * (!!) ls chanx
         y     = ceiling $ scaleFac * (!!) ls chany
-    putStrLn $ "updating to" ++ (show (chanx, chany)) ++ (show (x,y))
+    --putStrLn $ "updating to" ++ (show (chanx, chany)) ++ (show (x,y))
     if ((x > 0) && (y > 0))
       then do
-           writePixel mutIm x y (PixelRGBA8 255 255 255 255)
+           writePixel mutIm x y color
            indivPlots (drop 4 ls) ((chanx, chany), plot)
       else indivPlots (drop 4 ls) ((chanx, chany), plot)
-
+  where color = case id of 0 -> green'
+                           1 -> blue'
+                           2 -> red'
+                           3 -> magenta'
+                           4 -> yellow'
+                           5 -> cyan'
+                           
 --------------------------------TChan stuff--------------------
                 
 cToTChan :: TChan TrodeSpike -> Consumer TrodeSpike IO() --consumer that forever writes the spikes to the tChan
@@ -205,8 +233,8 @@ dimPlot im  = return ()
 
 
 indivPlots' :: [Double] -> ((Int, Int), Plot) -> IO ()
-indivPlots' ls ((x,y), plot) = do
-  let mutIm= image plot
+indivPlots' ls ((x,y), Plot image id) = do
+  let mutIm= image
   sequence_ $ map (pixelWriter mutIm x y) ls
 
 pixelWriter :: MutImage -> Int -> Int -> Double -> IO () 
