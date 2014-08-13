@@ -30,12 +30,17 @@ cabal-version:       >=1.10
 executable EfficientDrawing
   main-is:             Efficient.hs
   -- other-modules:       
-  -- other-extensions:    
+  -- other-extensions:
+  Ghc-Options:     -O2 -threaded -fprof-auto -funbox-strict-fields -rtsopts -with-rtsopts=-N4   
   build-depends:       async,
                        base >=4.7 && <4.8,
+                       binary,
+                       bmp,
                        bytestring,
                        containers,
                        directory,
+                       distributed-process,
+                       distributed-process-simplelocalnet,
                        JuicyPixels,
                        gloss,
                        gloss-juicy,

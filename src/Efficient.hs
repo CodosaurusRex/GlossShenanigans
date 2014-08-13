@@ -1,3 +1,5 @@
+{-# LANGUAGE TemplateHaskell      #-}
+
 module Main where
 
 import Graphics.Gloss
@@ -24,6 +26,17 @@ import Codec.Picture.Bitmap
 import Control.Applicative
 import Data.Vector as V ((!))
 import Codec.BMP
+import Data.Binary
+import Control.Distributed.Process.Backend.SimpleLocalnet
+import Control.Distributed.Process.Node (initRemoteTable, runProcess)
+import Control.Distributed.Process
+import Control.Distributed.Process.Closure
+import Data.Typeable
+import qualified Control.Concurrent as C
+import qualified Pipes.Prelude as PP
+
+
+type TempData = TrodeSpike
 
 type TotalPlots = Map (Int, Int) Plot
 
@@ -35,7 +48,7 @@ data Plot = Plot { image:: MutImage
                  } 
             
 data World = World { totalPlots  :: TotalPlots
-                   , spikeChan   :: TChan TrodeSpike
+                   , spikeChan   :: TChan TempData --TrodeSpike
                    , time        :: Double
                    , currchanX   :: Int
                    , currchanY   :: Int
@@ -50,6 +63,15 @@ cyan'    = PixelRGBA8 255 255 255 0
 magenta' = PixelRGBA8 0 255 255 255 
 
 
+
+getRandomNumTup :: IO [Double]
+getRandomNumTup = do
+  a <-getStdRandom (randomR (0, 699))
+  b <-getStdRandom (randomR (0, 699))
+  c <-getStdRandom (randomR (0, 699))
+  d <-getStdRandom (randomR (0, 699))
+  return [a,b,c,d]
+
 ------------------------Initializing stuff-------------------------
 listOfKeys :: [(Int, Int)]
 listOfKeys = [(x,y) | x <- [0..3], y <- [0..3], x < y]
@@ -62,7 +84,7 @@ myFrozen = do
   mut <- myMutable
   freezeImage mut
 
-initWorld :: TChan TrodeSpike ->TotalPlots -> World --initializes the world <Checked>
+initWorld :: TChan TempData {-TrodeSpike-} ->TotalPlots -> World --initializes the world <Checked>
 initWorld c ps = World ps c 4492 0 1
 
 initPlots :: IO TotalPlots -- <Checked>
@@ -98,28 +120,38 @@ imToPic mutim = do
 
 
 toPointList :: TrodeSpike -> [Double] -- <Checked>
-toPointList s = (realToFrac $ (V.!) (spikeAmplitudes s) 0):
+toPointList s = (realToFrac $ (V.! ) (spikeAmplitudes s) 0):
                 (realToFrac $ (V.!) (spikeAmplitudes s) 1):
                 (realToFrac $ (V.!) (spikeAmplitudes s) 2):
                 (realToFrac $ (V.!) (spikeAmplitudes s) 3):[]
+
+
+
+toPointList' :: TrodeSpike -> [Double]
+toPointList' s = [1,2,3,4]
+
+
 scaleFac :: Double
-scaleFac = 2000000
+scaleFac = 2e6
                 
 
 -------------------Gloss stuff-----------------------------
 
-main :: IO()
-main = do
-  (fn:_) <- getArgs
-  let d = InWindow "cool window" (700, 700) (0,0)
+initGloss :: TChan TempData -> IO()
+initGloss c = do
+  --(fn:_) <- getArgs
+  
+  --c <- newTChanIO
+  --_ <- async. runEffect $ produceTrodeSpikesFromFile fn 16
+    --   >-> relativeTimeCat (\s -> spikeTime s - 4492)
+      -- >-> cToTChan c-}
+
   t0 <- getCurrentTime
-  c <- newTChanIO
-  _ <- async. runEffect $ produceTrodeSpikesFromFile fn 16
-       >-> relativeTimeCat (\s -> spikeTime s - 4492)
-       >-> cToTChan c
   plots <- initPlots
-  image <- myFrozen 
+  let d = InWindow "cool window" (700, 700) (0,0)
   playIO d blue 300 (initWorld c plots) (drawWorld) handleInp $ step t0
+  
+
 
 drawWorld :: World -> IO Picture --changes from world to actual picture
 drawWorld (World plots c _ chanx chany) = do
@@ -134,10 +166,24 @@ drawWorld (World plots c _ chanx chany) = do
 step :: UTCTime -> Float -> World -> IO World
 step t0 _ w = do
   tNext <- getExperimentTime t0 4492
+  let c = spikeChan w --do not delete pls. needed.
+  emp <- (atomically $ isEmptyTChan c)
+  if (emp == False) 
+    then do 
+      spike <- atomically $ flushChan c
+      updateBMPs (totalPlots w) (map toPointList spike)
+      return w { time = tNext}
+    else return w {time = tNext}
+
+{-
+step' :: UTCTime -> Float -> World -> IO World
+step' t0 _ w = do
+  tNext <- getExperimentTime t0 4492
   let c = spikeChan w
-  spike <- atomically $ flushChan c
-  updateBMPs (totalPlots w) (map toPointList spike)
+  spike <- atomically $ flushChan' c
+  updateBMPs (totalPlots w) spike
   return w { time = tNext}
+-}
 
 updateBMPs :: TotalPlots -> [[Double]] -> IO ()
 updateBMPs plots updatels = do
@@ -148,7 +194,6 @@ updateBMPs plots updatels = do
 indivPlots :: [Double] -> ((Int, Int), Plot) -> IO () --not a problem here
 indivPlots ls ((chanx, chany), (plot@(Plot _ id))) = do
   let mutIm = image plot
-  dimPlot mutIm
   if ((length ls) == 0)
     then return ()
     else do
@@ -170,10 +215,12 @@ indivPlots ls ((chanx, chany), (plot@(Plot _ id))) = do
 --------------------------------TChan stuff--------------------
                 
 cToTChan :: TChan TrodeSpike -> Consumer TrodeSpike IO() --consumer that forever writes the spikes to the tChan
-cToTChan c =  forever $ (await >>= lift . atomically . writeTChan c)
-
-
-
+cToTChan c =  forever $ do
+                --liftIO $ putStrLn "adding"
+                a <-await
+                --liftIO $ putStrLn "done awaiting"
+                liftIO . atomically $ writeTChan c a
+                --liftIO $ putStrLn "added"
 
 flushChan :: TChan TrodeSpike -> STM [TrodeSpike]
 flushChan c = go []
@@ -184,7 +231,17 @@ flushChan c = go []
             else do
              e <- readTChan c
              go (e:acc)
-
+{-
+flushChan' :: TChan TempData -> STM [[Double]]
+flushChan' c = go []
+  where go acc = do
+          emp <- isEmptyTChan c
+          if emp
+            then return $ reverse acc
+            else do
+             e <- readTChan c
+             go (e:acc)  
+-}
 
 ----------------------------time stuff--------------------------------
 
@@ -220,23 +277,84 @@ nextChannel x y= case (x,y) of (0,1) -> (0,2)
                                (2,3) -> (0,1)
                                otherwise -> (0,1)
   
--------------------------ignore past here--------------------------
+-----------------------------cloud stuff--------------------------------
+
+sender :: Process ()
+sender = do
+  liftIO $ putStrLn "expecting sendport"
+  s <- expect :: Process (SendPort TempData)
+  liftIO $ putStrLn "got a sendport"
+  c <- liftIO $ newTChanIO
+  liftIO $ C.forkIO $ runEffect $ produceTrodeSpikesFromFile "/home/chennosaurus/1628.tt" 16 
+       >-> relativeTimeCat (\s -> spikeTime s -  4492) --4491)
+       >-> cToTChan c
+  liftIO $ putStrLn "past the cToTChan"
+  forever $ do
+           --liftIO $ putStrLn "about to send dat"
+           sendDat s c
+  
+sendDat :: SendPort TempData -> TChan TrodeSpike -> Process () 
+sendDat s c= do
+  emp <- inp $ isEmptyTChan c
+  if emp
+     then do
+        --liftIO $ putStrLn "empty tchan"
+       return ()
+     else do
+       e <- inp $ readTChan c
+       sendChan s e
+       sendDat s c
+  where inp = \a -> liftIO.atomically $ a
+
+receiver :: ProcessId -> Process()
+receiver id = do
+  (sendCh, receiveCh) <- newChan :: Process (SendPort (TempData), ReceivePort (TempData))
+  send id sendCh
+  liftIO $ putStrLn "sent port"
+  c <- liftIO $ newTChanIO
+  receiveData c receiveCh
+  liftIO $ C.forkIO $ initGloss c
+  forever $ do
+    receiveData c receiveCh
+
+receiveData :: TChan TempData -> ReceivePort (TempData) -> Process ()
+receiveData c port = do
+  dat <- receiveChan port
+  liftIO.atomically $ writeTChan c dat
+  --DISPLAYPLOTS
+
+remotable ['sender, 'receiver]
+
+master :: [NodeId] -> Process ()
+master [] = liftIO $ putStrLn "no slaves"
+master [generator,displayer] = do
+  a <- spawn  generator $(mkStaticClosure 'sender)
+  liftIO $ putStrLn "done with send going on to display"
+  b <- spawn displayer $ $(mkClosure ('receiver)) a
+  return ()
 
 
-printWorld :: World -> IO ()
-printWorld  w = print $ (currchanX w, currchanY w)
+
+main :: IO () 
+main = do
+  [serverType, port] <- getArgs 
+  case serverType of
+    "master" -> do  
+       backend <- initializeBackend "localhost" port rtable
+       startMaster backend master
+    "dotplot" -> do
+       backend <- initializeBackend "localhost" port rtable
+       startSlave backend
+    "getSpikes" -> do
+       backend <- initializeBackend "localhost" port rtable
+       startSlave backend
+   where
+     rtable :: RemoteTable
+     rtable = __remoteTable initRemoteTable
 
 
-dimPlot :: MutImage -> IO ()
-dimPlot im  = return ()
 
+-----------------------------useless stuff for final----------
 
+---------------------------utils-----------------------------
 
-indivPlots' :: [Double] -> ((Int, Int), Plot) -> IO ()
-indivPlots' ls ((x,y), Plot image id) = do
-  let mutIm= image
-  sequence_ $ map (pixelWriter mutIm x y) ls
-
-pixelWriter :: MutImage -> Int -> Int -> Double -> IO () 
-pixelWriter im x1 x2 y = do
-  writePixel im (100*((x1 * x2) + x2)) (ceiling $ scaleFac * y) (PixelRGBA8 255 255 255 255) 
