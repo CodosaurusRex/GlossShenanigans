@@ -1,4 +1,5 @@
 {-# LANGUAGE TemplateHaskell      #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 module Main where
 
@@ -31,6 +32,7 @@ import Control.Distributed.Process.Backend.SimpleLocalnet
 import Control.Distributed.Process.Node (initRemoteTable, runProcess)
 import Control.Distributed.Process
 import Control.Distributed.Process.Closure
+import Control.Distributed.Process
 import Data.Typeable
 import qualified Control.Concurrent as C
 import qualified Pipes.Prelude as PP
@@ -53,6 +55,31 @@ data World = World { totalPlots  :: TotalPlots
                    , currchanX   :: Int
                    , currchanY   :: Int
                    }
+
+data SlaveControllerMsg
+   = SlaveTerminate
+   | RedirectLogsTo ProcessId ProcessId
+  deriving (Typeable, Show)
+
+instance Binary SlaveControllerMsg where
+  put SlaveTerminate = putWord8 0
+  put (RedirectLogsTo a b) = do putWord8 1; put (a,b)
+  get = do
+    header <- getWord8
+    case header of
+      0 -> return SlaveTerminate
+      1 -> do (a,b) <- get; return (RedirectLogsTo a b)
+      _ -> fail "SlaveControllerMsg.get: invalid"
+
+data RedirectLogsReply
+  = RedirectLogsReply ProcessId Bool
+  deriving (Typeable, Show)
+
+instance Binary RedirectLogsReply where
+  put (RedirectLogsReply from ok) = put (from,ok)
+  get = do
+    (from,ok) <- get
+    return (RedirectLogsReply from ok)
 
 green'   = PixelRGBA8 255 0 255 0
 blue'    = PixelRGBA8 0 255 255 0
@@ -282,6 +309,8 @@ nextChannel x y= case (x,y) of (0,1) -> (0,2)
 sender :: Process ()
 sender = do
   liftIO $ putStrLn "expecting sendport"
+  myId <- getSelfPid
+  liftIO  $ print myId
   s <- expect :: Process (SendPort TempData)
   liftIO $ putStrLn "got a sendport"
   c <- liftIO $ newTChanIO
@@ -309,6 +338,7 @@ sendDat s c= do
 receiver :: ProcessId -> Process()
 receiver id = do
   (sendCh, receiveCh) <- newChan :: Process (SendPort (TempData), ReceivePort (TempData))
+  liftIO $ print id
   send id sendCh
   liftIO $ putStrLn "sent port"
   c <- liftIO $ newTChanIO
@@ -322,32 +352,58 @@ receiveData c port = do
   dat <- receiveChan port
   liftIO.atomically $ writeTChan c dat
   --DISPLAYPLOTS
+ 
+go :: Process ()
+go = do
+  id <- getSelfPid
+  liftIO $ print id
+  (typ, senId) <- expect :: Process (String, ProcessId) 
+  --typ <- readTVarIO                
+  case typ of
+    "receiver" -> receiver senId
+    _ -> sender
+  
 
-remotable ['sender, 'receiver]
+remotable ['go, 'sender, 'receiver]
 
 master :: [NodeId] -> Process ()
 master [] = liftIO $ putStrLn "no slaves"
-master [generator,displayer] = do
-  a <- spawn  generator $(mkStaticClosure 'sender)
-  liftIO $ putStrLn "done with send going on to display"
-  b <- spawn displayer $ $(mkClosure ('receiver)) a
+master [sender' , receiver'] = do
+  a <- spawn  sender'  $(mkStaticClosure 'go)
+  b <- spawn receiver' $ $(mkStaticClosure('go))
+ -- b <- spawn receiver' $ $(mkClosure('receiver)) a
+  whereisRemoteAsync sender' "getSpikes"
+  WhereIsReply str (Just sendID) <- expect :: Process (WhereIsReply)
+  liftIO $ print (sendID, a)
+  whereisRemoteAsync receiver' "dotplot"
+  WhereIsReply str2 (Just dispID) <- expect :: Process (WhereIsReply)
+  liftIO $ print (dispID, b)
+  send a ("sender", a)
+  send b ("receiver", a)
   return ()
-
+master _ = liftIO $ print "dafuq"
 
 
 main :: IO () 
 main = do
-  [serverType, port] <- getArgs 
+  [serverType, port] <- getArgs
+  t <- newTVarIO " "
   case serverType of
     "master" -> do  
        backend <- initializeBackend "localhost" port rtable
-       startMaster backend master
+       nod <- newLocalNode backend
+       pers <- findPeers backend 10000
+       print pers
+       runProcess nod $ master (take 2 pers)
+       return ()
     "dotplot" -> do
        backend <- initializeBackend "localhost" port rtable
-       startSlave backend
+       atomically $ writeTVar t serverType
+       startSlave' serverType backend
     "getSpikes" -> do
        backend <- initializeBackend "localhost" port rtable
-       startSlave backend
+       atomically $ writeTVar t serverType
+       startSlave' serverType backend
    where
      rtable :: RemoteTable
      rtable = __remoteTable initRemoteTable
@@ -357,4 +413,16 @@ main = do
 -----------------------------useless stuff for final----------
 
 ---------------------------utils-----------------------------
+startSlave' :: String -> Backend -> IO ()
+startSlave' str backend = do
+  node <- newLocalNode backend
+  runProcess node (stay str)
+
+stay :: String -> Process ()
+stay str = do
+  pid <- getSelfPid
+  let str = "getSpikes"
+  register str pid
+  () <- expect
+  return ()
 
