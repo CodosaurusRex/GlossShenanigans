@@ -29,7 +29,7 @@ import Data.Vector as V ((!))
 import Codec.BMP
 import Data.Binary
 import Control.Distributed.Process.Backend.SimpleLocalnet
-import Control.Distributed.Process.Node (initRemoteTable, runProcess)
+import Control.Distributed.Process.Node (LocalNode, localNodeId, initRemoteTable, runProcess)
 import Control.Distributed.Process
 import Control.Distributed.Process.Closure
 import Control.Distributed.Process
@@ -372,10 +372,10 @@ master [sender' , receiver'] = do
   a <- spawn  sender'  $(mkStaticClosure 'go)
   b <- spawn receiver' $ $(mkStaticClosure('go))
  -- b <- spawn receiver' $ $(mkClosure('receiver)) a
-  whereisRemoteAsync sender' "getSpikes"
+  whereisRemoteAsync sender' "dotplot"
   WhereIsReply str (Just sendID) <- expect :: Process (WhereIsReply)
   liftIO $ print (sendID, a)
-  whereisRemoteAsync receiver' "dotplot"
+  whereisRemoteAsync receiver' "getSpikes"
   WhereIsReply str2 (Just dispID) <- expect :: Process (WhereIsReply)
   liftIO $ print (dispID, b)
   send a ("sender", a)
@@ -399,30 +399,30 @@ main = do
     "dotplot" -> do
        backend <- initializeBackend "localhost" port rtable
        atomically $ writeTVar t serverType
-       startSlave' serverType backend
+       startSlave' "dotplot" backend
     "getSpikes" -> do
        backend <- initializeBackend "localhost" port rtable
        atomically $ writeTVar t serverType
-       startSlave' serverType backend
+       startSlave' "getSpikes" backend
    where
      rtable :: RemoteTable
      rtable = __remoteTable initRemoteTable
 
 
-
+ 
 -----------------------------useless stuff for final----------
 
 ---------------------------utils-----------------------------
 startSlave' :: String -> Backend -> IO ()
 startSlave' str backend = do
   node <- newLocalNode backend
-  runProcess node (stay str)
+  runProcess node (stay str node)
 
-stay :: String -> Process ()
-stay str = do
+stay :: String -> LocalNode ->Process ()
+stay str node = do
   pid <- getSelfPid
-  let str = "getSpikes"
-  register str pid
+  let nodeID = localNodeId node
+  registerRemoteAsync nodeID str pid
   () <- expect
   return ()
 
