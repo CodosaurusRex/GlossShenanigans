@@ -6,7 +6,7 @@ module Main where
 import Graphics.Gloss
 import Graphics.Gloss.Interface.IO.Game
 import System.Random
-import Data.Map as M (Map, fromList, toList, (!))
+import Data.Map as M (Map, fromList, toList, (!), keys)
 import Codec.Picture.Types
 import Control.Monad.Primitive
 import Control.Monad
@@ -17,7 +17,7 @@ import Pipes
 import Pipes.RealTime
 import System.Environment
 import System.Directory
-import Data.Ephys.OldMWL.Parse
+import Data.Ephys.OldMWL.ParseSpike
 import Data.Time.Clock
 import Data.Monoid
 import Data.Ephys.Spike
@@ -34,11 +34,15 @@ import Control.Distributed.Process
 import Control.Distributed.Process.Closure
 import Control.Distributed.Process
 import Data.Typeable
+import System.Arte.FileUtils
+import qualified Data.List as L  
 import qualified Control.Concurrent as C
 import qualified Pipes.Prelude as PP
 
 
 type TempData = TrodeSpike
+  
+type MultTetrodes = Map Int TotalPlots
 
 type TotalPlots = Map (Int, Int) Plot
 
@@ -47,13 +51,14 @@ type FrozImage = Image PixelRGBA8
 
 data Plot = Plot { image:: MutImage
                  , id   :: Int       
-                 } 
+                 }
             
-data World = World { totalPlots  :: TotalPlots
+data World = World { tets        :: MultTetrodes
                    , spikeChan   :: TChan TempData --TrodeSpike
                    , time        :: Double
                    , currchanX   :: Int
                    , currchanY   :: Int
+                   , currTet     :: Int
                    }
 
 data SlaveControllerMsg
@@ -91,6 +96,10 @@ magenta' = PixelRGBA8 0 255 255 255
 
 
 
+mapPlots :: TotalPlots -> FilePath -> (Int, TotalPlots)
+mapPlots tp fn = ((trim fn), tp)
+
+
 getRandomNumTup :: IO [Double]
 getRandomNumTup = do
   a <-getStdRandom (randomR (0, 699))
@@ -111,30 +120,20 @@ myFrozen = do
   mut <- myMutable
   freezeImage mut
 
-initWorld :: TChan TempData {-TrodeSpike-} ->TotalPlots -> World --initializes the world <Checked>
-initWorld c ps = World ps c 4492 0 1
+initWorld :: TChan TempData -> MultTetrodes -> World --initializes the world <Checked>
+initWorld c mt = World mt c 4492 0 1 7
 
 initPlots :: IO TotalPlots -- <Checked>
 initPlots = do
   let listOfIOImages (x,y) = x `seq` y `seq` createMutableImage 700 700 (PixelRGBA8 0 (fromIntegral y) 255 (fromIntegral x))
-
-
-
-        {-if length ls < 6 
-                          then listOfIOImages$
-                               createMutableImage 700 700 (PixelRGBA8 0 0 255 0):[]
-                               createMutableImage 700 700 (PixelRGBA8 0 0 255 5):
-                               createMutableImage 700 700 (PixelRGBA8 0 0 255 4):
-                               createMutableImage 700 700 (PixelRGBA8 0 0 255 3):
-                               createMutableImage 700 700 (PixelRGBA8 0 0 255 2):
-                               createMutableImage 700 700 (PixelRGBA8 0 0 255 1):[]-}
-                                                                                       
- --                         else ls --build a list of IO Mutable Images
       toPlot im num = Plot im num 
   lsIm <- forM listOfKeys listOfIOImages 
 --sequence $ listOfIOImages [] --Turn that list of IO Mutable Images into a list of images
-  let plots = zipWith toPlot lsIm ([0..5] :: [Int]) 
-  return $ fromList (zip listOfKeys (plots)) -- zip the keys with mutable images and then turn them all into a map. Return the map in the IO monad.
+  let plots = zipWith toPlot lsIm ([0..5] :: [Int])  
+  return $ (fromList (zip listOfKeys (plots)))-- zip the keys with mutable images and then turn them all into a map. Return the map in the IO monad.
+
+trim ::FilePath -> Int
+trim fn = read $ take 2 $ drop ((length fn) - 7) fn :: Int
       
 
 
@@ -145,12 +144,12 @@ imToPic mutim = do
   let bString = encodeBitmap im
   return $ scale (1) (-1) $ bitmapOfByteString 700 700 (BS.drop (54) $ toStrict bString) False
 
-
-toPointList :: TrodeSpike -> [Double] -- <Checked>
-toPointList s = (realToFrac $ (V.! ) (spikeAmplitudes s) 0):
-                (realToFrac $ (V.!) (spikeAmplitudes s) 1):
-                (realToFrac $ (V.!) (spikeAmplitudes s) 2):
-                (realToFrac $ (V.!) (spikeAmplitudes s) 3):[]
+toPointList :: TrodeSpike -> (Int, [Double]) -- <Checked>
+toPointList s = ((spikeTrodeName s),
+                ((realToFrac $ (V.!) (spikeAmplitudes s) 0):
+                 (realToFrac $ (V.!) (spikeAmplitudes s) 1):
+                 (realToFrac $ (V.!) (spikeAmplitudes s) 2):
+                 (realToFrac $ (V.!) (spikeAmplitudes s) 3):[]))
 
 
 
@@ -159,7 +158,7 @@ toPointList' s = [1,2,3,4]
 
 
 scaleFac :: Double
-scaleFac = 2e6
+scaleFac = 5e5
                 
 
 -------------------Gloss stuff-----------------------------
@@ -172,17 +171,19 @@ initGloss c = do
   --_ <- async. runEffect $ produceTrodeSpikesFromFile fn 16
     --   >-> relativeTimeCat (\s -> spikeTime s - 4492)
       -- >-> cToTChan c-}
-
+  files <- getFilesByExtension "/home/chennosaurus/112812clip2" 10 "tt"
   t0 <- getCurrentTime
   plots <- initPlots
+  let tets = fromList $ map (mapPlots plots) files  
   let d = InWindow "cool window" (700, 700) (0,0)
-  playIO d blue 300 (initWorld c plots) (drawWorld) handleInp $ step t0
+  playIO d blue 300 (initWorld c tets) (drawWorld) handleInp $ step t0
   
 
 
 drawWorld :: World -> IO Picture --changes from world to actual picture
-drawWorld (World plots c _ chanx chany) = do
-  let currPlot = (M.!) plots (chanx, chany)
+drawWorld (World tets c _ chanx chany chanTet) = do
+  let currTet =  (M.!) tets (chanTet)
+  let currPlot = (M.!) currTet (chanx, chany)
       im       = image currPlot
   --putStrLn $ "drawing to" ++ (show (chanx, chany))
   imToPic (im)  
@@ -198,24 +199,21 @@ step t0 _ w = do
   if (emp == False) 
     then do 
       spike <- atomically $ flushChan c
-      updateBMPs (totalPlots w) (map toPointList spike)
+      --print spike 
+      mapM_ (updateTet (tets w)) (map toPointList spike)
       return w { time = tNext}
     else return w {time = tNext}
 
-{-
-step' :: UTCTime -> Float -> World -> IO World
-step' t0 _ w = do
-  tNext <- getExperimentTime t0 4492
-  let c = spikeChan w
-  spike <- atomically $ flushChan' c
-  updateBMPs (totalPlots w) spike
-  return w { time = tNext}
--}
+updateTet :: MultTetrodes -> (Int, [Double]) -> IO ()
+updateTet mt (key, ls) = do
+  let tplot = (M.!) mt key
+  print key
+        updateBMPs tplot ls
 
-updateBMPs :: TotalPlots -> [[Double]] -> IO ()
+updateBMPs :: TotalPlots -> [Double] -> IO ()
 updateBMPs plots updatels = do
   let ls = toList plots
-  mapM_ (indivPlots (concat updatels)) ls
+  mapM_ (indivPlots (updatels)) ls
 
 
 indivPlots :: [Double] -> ((Int, Int), Plot) -> IO () --not a problem here
@@ -227,7 +225,7 @@ indivPlots ls ((chanx, chany), (plot@(Plot _ id))) = do
     let x     = ceiling $ scaleFac * (!!) ls chanx
         y     = ceiling $ scaleFac * (!!) ls chany
     --putStrLn $ "updating to" ++ (show (chanx, chany)) ++ (show (x,y))
-    if ((x > 0) && (y > 0))
+    if ((x > 0) && (y > 0)) -- && (x < 700) && (y < 700))
       then do
            writePixel mutIm x y color
            indivPlots (drop 4 ls) ((chanx, chany), plot)
@@ -281,7 +279,7 @@ getExperimentTime t0 et0 =
 -----------------------Input stuff---------------
 
 handleInp :: Event -> World -> IO World
-handleInp (EventKey (MouseButton b) Up _ _) w@(World _ _ _ x y)
+handleInp (EventKey (MouseButton b) Up _ _) w@(World _ _ _ x y _ )
 {-
   | b == LeftButton = 
     return $ w {currchanX = (currchanX w + 1) `mod` 4}
@@ -292,6 +290,11 @@ handleInp (EventKey (MouseButton b) Up _ _) w@(World _ _ _ x y)
     let (newX, newY) = nextChannel x y
     return $ w {currchanX = newX, currchanY = newY}
   | otherwise = return w
+handleInp (EventKey (SpecialKey KeySpace) Down _ _) w@(World tets _ _ _ _ t) =  do
+  let k = M.keys tets
+  let Just ind = L.elemIndex t k
+  return $ w {currTet = (!!) k (ind + 1)}
+
 handleInp _ w = return w
 
 
@@ -306,20 +309,27 @@ nextChannel x y= case (x,y) of (0,1) -> (0,2)
   
 -----------------------------cloud stuff--------------------------------
 
-sender :: Process ()
-sender = do
+sender :: TChan TempData -> FilePath -> Process ()
+sender c file = do
+  liftIO $ C.forkIO $ runEffect $ produceTrodeSpikesFromFile file (trim file) 
+       >-> relativeTimeCat (\s -> spikeTime s -  4492) --4491)
+       >-> cToTChan c
+  liftIO $ print "done with producing"
+  return ()
+
+sender' :: Process ()
+sender' = do
   liftIO $ putStrLn "expecting sendport"
   myId <- getSelfPid
   liftIO  $ print myId
   s <- expect :: Process (SendPort TempData)
   liftIO $ putStrLn "got a sendport"
   c <- liftIO $ newTChanIO
-  liftIO $ C.forkIO $ runEffect $ produceTrodeSpikesFromFile "/home/chennosaurus/1628.tt" 16 
+  liftIO $ C.forkIO $ runEffect $ produceTrodeSpikesFromFile "/home/chennosaurus/112812clip2/1628/1628.tt" 16 
        >-> relativeTimeCat (\s -> spikeTime s -  4492) --4491)
        >-> cToTChan c
   liftIO $ putStrLn "past the cToTChan"
   forever $ do
-           --liftIO $ putStrLn "about to send dat"
            sendDat s c
   
 sendDat :: SendPort TempData -> TChan TrodeSpike -> Process () 
@@ -355,16 +365,34 @@ receiveData c port = do
  
 go :: Process ()
 go = do
+  (typ, senId) <- expect :: Process (String, ProcessId)                
+  case typ of
+    "receiver" -> receiver senId
+    _ -> do
+         liftIO $ print "finding files"
+         fn <- liftIO $ getFilesByExtension "/home/chennosaurus/112812clip2" 10 "tt"
+         liftIO $ print "found"
+         liftIO $ print fn
+         s <- expect :: Process (SendPort TempData)
+         liftIO $ putStrLn "got a sendport"
+         c <- liftIO $ newTChanIO
+         sequence $ map (sender c) fn 
+         --sequence $ map (sender c) fn
+         forever $ do
+           sendDat s c
+
+go' :: Process ()
+go' = do
   id <- getSelfPid
   liftIO $ print id
   (typ, senId) <- expect :: Process (String, ProcessId) 
   --typ <- readTVarIO                
   case typ of
     "receiver" -> receiver senId
-    _ -> sender
+    _ -> sender'
   
 
-remotable ['go, 'sender, 'receiver]
+remotable ['go, 'go']
 
 master :: [NodeId] -> Process ()
 master [] = liftIO $ putStrLn "no slaves"
@@ -375,7 +403,7 @@ master [sender' , receiver'] = do
   whereisRemoteAsync sender' "dotplot"
   WhereIsReply str (Just sendID) <- expect :: Process (WhereIsReply)
   liftIO $ print (sendID, a)
-  whereisRemoteAsync receiver' "getSpikes"
+  whereisRemoteAsync receiver' "dotplot"
   WhereIsReply str2 (Just dispID) <- expect :: Process (WhereIsReply)
   liftIO $ print (dispID, b)
   send a ("sender", a)
@@ -403,13 +431,11 @@ main = do
     "getSpikes" -> do
        backend <- initializeBackend "localhost" port rtable
        atomically $ writeTVar t serverType
-       startSlave' "getSpikes" backend
+       startSlave' "dotplot" backend
    where
      rtable :: RemoteTable
      rtable = __remoteTable initRemoteTable
 
-
- 
 -----------------------------useless stuff for final----------
 
 ---------------------------utils-----------------------------
@@ -423,6 +449,7 @@ stay str node = do
   pid <- getSelfPid
   let nodeID = localNodeId node
   registerRemoteAsync nodeID str pid
+  RegisterReply str bool <- expect :: Process (RegisterReply)
   () <- expect
   return ()
 
